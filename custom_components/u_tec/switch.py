@@ -1,10 +1,11 @@
 """Support for Uhome switches."""
 
 from typing import Any, cast
+import logging
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import _LOGGER, HomeAssistant, callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
@@ -15,6 +16,9 @@ from utec_py.exceptions import DeviceError
 
 from .const import DOMAIN, SIGNAL_DEVICE_UPDATE
 from .coordinator import UhomeDataUpdateCoordinator
+
+# define our own logger so we don't import the private internal logger, and instead use a module logger
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -64,8 +68,13 @@ class UhomeSwitchEntity(CoordinatorEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
+        _LOGGER.debug("Turning on switch %s", self._device.device_id)
         try:
             await self._device.turn_on()
+            # Optimistically update local state immediately so the UI
+            # reflects the intended state while we wait for the next poll.
+            self._device._is_on = True  # noqa: SLF001
+            self.async_write_ha_state()
             await self.coordinator.async_request_refresh()
         except DeviceError as err:
             _LOGGER.error(
@@ -75,8 +84,12 @@ class UhomeSwitchEntity(CoordinatorEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
+        _LOGGER.debug("Turning off switch %s", self._device.device_id)
         try:
             await self._device.turn_off()
+            # Optimistic state update (see turn_on above)
+            self._device._is_on = False  # noqa: SLF001
+            self.async_write_ha_state()
             await self.coordinator.async_request_refresh()
         except DeviceError as err:
             _LOGGER.error(
@@ -88,7 +101,6 @@ class UhomeSwitchEntity(CoordinatorEntity, SwitchEntity):
         """Register callbacks."""
         await super().async_added_to_hass()
 
-        # Register update callback for push notifications
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,

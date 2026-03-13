@@ -1,6 +1,6 @@
 """Support for Uhome lights."""
 
-import math
+import logging
 from typing import Any, cast
 
 from homeassistant.components.light import (
@@ -11,21 +11,24 @@ from homeassistant.components.light import (
     LightEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import _LOGGER, HomeAssistant, callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util.color import value_to_brightness
-from homeassistant.util.percentage import percentage_to_ranged_value
 from utec_py.devices.light import Light as UhomeLight
 from utec_py.exceptions import DeviceError
 
 from .const import DOMAIN, SIGNAL_DEVICE_UPDATE
 from .coordinator import UhomeDataUpdateCoordinator
 
-BRIGHTNESS_SCALE = (0, 100)
+# Same bad import as switch.py — use module-level logger
+_LOGGER = logging.getLogger(__name__)
+
+BRIGHTNESS_SCALE = (1, 100)  # U-Tec uses 1-100, not 0-100
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -62,18 +65,30 @@ class UhomeLightEntity(CoordinatorEntity, LightEntity):
         )
         self._attr_has_entity_name = True
 
-        # Set supported color modes
+        # Set supported color modes based on device capabilities
         self._attr_supported_color_modes = set()
         supported_features = self._device.supported_capabilities
 
-        if "brightness" in supported_features:
+        has_brightness = (
+            "brightness" in supported_features
+            or "st.brightness" in supported_features
+            or "st.switchLevel" in supported_features
+        )
+        has_color = "color" in supported_features or "st.colorControl" in supported_features
+        has_color_temp = "color_temp" in supported_features or "st.colorTemperature" in supported_features
+
+        if has_brightness:
             self._attr_supported_color_modes.add(ColorMode.BRIGHTNESS)
-        if "color" in supported_features:
+        if has_color:
             self._attr_supported_color_modes.add(ColorMode.RGB)
-        if "color_temp" in supported_features:
+        if has_color_temp:
             self._attr_supported_color_modes.add(ColorMode.COLOR_TEMP)
 
-        # Set default color mode
+        # Fall back to on/off if no richer capabilities detected
+        if not self._attr_supported_color_modes:
+            self._attr_supported_color_modes.add(ColorMode.ONOFF)
+
+        # Set default color mode (richest available wins)
         if ColorMode.RGB in self._attr_supported_color_modes:
             self._attr_color_mode = ColorMode.RGB
         elif ColorMode.COLOR_TEMP in self._attr_supported_color_modes:
@@ -82,7 +97,6 @@ class UhomeLightEntity(CoordinatorEntity, LightEntity):
             self._attr_color_mode = ColorMode.BRIGHTNESS
         else:
             self._attr_color_mode = ColorMode.ONOFF
-            self._attr_supported_color_modes.add(ColorMode.ONOFF)
 
     @property
     def available(self) -> bool:
@@ -107,20 +121,22 @@ class UhomeLightEntity(CoordinatorEntity, LightEntity):
         return self._device.rgb_color
 
     @property
-    def color_temp(self) -> int | None:
-        """Return the color temperature in mireds."""
-        if self._device.color_temp is None:
-            return None
-        return int(1000000 / self._device.color_temp)
+    def color_temp_kelvin(self) -> int | None:
+        """Return the color temperature in Kelvin."""
+        # HA deprecated the mireds `color_temp` property in favour of
+        # `color_temp_kelvin`.
+        return self._device.color_temp
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
+        _LOGGER.debug("Turning on light %s kwargs=%s", self._device.device_id, kwargs)
         try:
             turn_on_args = {}
 
             if ATTR_BRIGHTNESS in kwargs:
                 brightness_255 = kwargs[ATTR_BRIGHTNESS]
-                turn_on_args["brightness"] = int((brightness_255 / 255) * 100)
+                # Convert HA 0-255 brightness to U-Tec 1-100 scale
+                turn_on_args["brightness"] = max(1, int((brightness_255 / 255) * 100))
 
             if ATTR_RGB_COLOR in kwargs:
                 turn_on_args["rgb_color"] = kwargs[ATTR_RGB_COLOR]
@@ -129,6 +145,13 @@ class UhomeLightEntity(CoordinatorEntity, LightEntity):
                 turn_on_args["color_temp"] = kwargs[ATTR_COLOR_TEMP_KELVIN]
 
             await self._device.turn_on(**turn_on_args)
+
+            # Optimistic state update so UI doesn't snap back
+            self._device._is_on = True  # noqa: SLF001
+            if "brightness" in turn_on_args:
+                self._device.brightness = turn_on_args["brightness"]
+            self.async_write_ha_state()
+
             await self.coordinator.async_request_refresh()
 
         except DeviceError as err:
@@ -137,8 +160,12 @@ class UhomeLightEntity(CoordinatorEntity, LightEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
+        _LOGGER.debug("Turning off light %s", self._device.device_id)
         try:
             await self._device.turn_off()
+            # Optimistic state update
+            self._device._is_on = False  # noqa: SLF001
+            self.async_write_ha_state()
             await self.coordinator.async_request_refresh()
         except DeviceError as err:
             _LOGGER.error(
@@ -150,7 +177,6 @@ class UhomeLightEntity(CoordinatorEntity, LightEntity):
         """Register callbacks."""
         await super().async_added_to_hass()
 
-        # Register update callback for push notifications
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
