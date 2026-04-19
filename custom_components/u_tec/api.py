@@ -184,6 +184,8 @@ class AsyncPushUpdateHandler:
                 _LOGGER.error("Unknown entry_id in webhook: %s", self.entry_id)
                 return web.Response(status=404)
 
+            _LOGGER.debug("Push request ready for processing: %s", data)
+
             coordinator = hass.data[DOMAIN][self.entry_id]["coordinator"]
             await coordinator.update_push_data(data)
 
@@ -196,4 +198,5 @@ class AsyncPushUpdateHandler:
             return web.json_response({"success": False, "error": "Internal error"}, status=500)
             
         else:
+            _LOGGER.debug("Push request successfully processed") 
             return web.json_response({"success": True})
