@@ -64,14 +64,6 @@ class AsyncPushUpdateHandler:
         """Register webhook with Home Assistant and the Uhome API."""
         self._auth_data = auth_data
 
-        if not external_url:
-            _LOGGER.error(
-                "No external URL available for push notifications. "
-                "Configure an external URL in Settings -> System -> Network, "
-                "or enable Home Assistant Cloud (Nabu Casa)."
-            )
-            return False
-
         if cloud.async_active_subscription(self.hass):
             webhook_url = await cloud.async_get_or_create_cloudhook(
                 self.hass, 
