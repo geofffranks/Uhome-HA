@@ -48,7 +48,7 @@ class AsyncPushUpdateHandler:
         """Initialize the webhook handler."""
         self.hass = hass
         self.entry_id = entry_id
-        self.webhook_id = f"{WEBHOOK_ID_PREFIX}{entry_id}"
+        self. = f"{_PREFIX}{entry_id}"
         self.webhook_url = None
         self._unregister_webhook = None
         self._cancel_reregister = None
@@ -67,13 +67,13 @@ class AsyncPushUpdateHandler:
         if cloud.async_active_subscription(self.hass):
             webhook_url = await cloud.async_get_or_create_cloudhook(
                 self.hass, 
-                webhook_id,
+                self.webhook_id,
             )
             cloudhook = True
         else:
             webhook_url = webhook.async_generate_url(
                 self.hass, 
-                webhook_id,
+                self.webhook_id,
                 allow_internal=False,
                 allow_ip=False,
                 allow_external=True,
