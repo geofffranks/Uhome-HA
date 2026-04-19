@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from aiohttp import ClientSession, web
 
-from homeassistant.components import webhook
+from homeassistant.components import webhook, cloud
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_entry_oauth2_flow, network
 from homeassistant.helpers.event import async_track_time_interval
