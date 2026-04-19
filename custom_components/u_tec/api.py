@@ -64,29 +64,6 @@ class AsyncPushUpdateHandler:
         """Register webhook with Home Assistant and the Uhome API."""
         self._auth_data = auth_data
 
-        # Try multiple URL resolution strategies
-        external_url = None
-        for allow_internal, allow_ip, prefer_cloud in [
-            (False, False, False),
-            (False, False, True),
-            (True, True, False),
-        ]:
-            try:
-                external_url = network.get_url(
-                    self.hass,
-                    allow_internal=allow_internal,
-                    allow_ip=allow_ip,
-                    prefer_cloud=prefer_cloud,
-                )
-                if external_url:
-                    _LOGGER.debug(
-                        "Resolved webhook base URL: %s (internal=%s, cloud=%s)",
-                        external_url, allow_internal, prefer_cloud,
-                    )
-                    break
-            except NoURLAvailableError:
-                continue
-
         if not external_url:
             _LOGGER.error(
                 "No external URL available for push notifications. "
@@ -95,17 +72,32 @@ class AsyncPushUpdateHandler:
             )
             return False
 
-        webhook_url = webhook.async_generate_url(self.hass, self.webhook_id)
-
-        if any(local in webhook_url for local in (
-            "192.168.", "10.", "172.", "homeassistant.local", "localhost", "127.0."
-        )):
-            _LOGGER.warning(
-                "Webhook URL %s appears to be a local address. "
-                "U-Tec's servers cannot reach it -- push state updates will not work. "
-                "Set up Nabu Casa or an externally-reachable URL.",
-                webhook_url,
+        if cloud.async_active_subscription(self.hass):
+            webhook_url = await cloud.async_get_or_create_cloudhook(
+                self.hass, 
+                webhook_id,
             )
+            cloudhook = True
+        else:
+            webhook_url = webhook.async_generate_url(
+                self.hass, 
+                webhook_id,
+                allow_internal=False,
+                allow_ip=False,
+                allow_external=True,
+            )
+            cloudhook = False
+
+        if webhook_url:
+            _LOGGER.debug(
+                "Resolved webhook base URL: %s (cloud=%s)",
+                webhook_url, cloudhook,
+            )
+        else:
+            _LOGGER.warning(
+                "Could not resolve webhook URL to an external address"
+            )
+            return False
 
         # Generate a fresh secret for this registration
         self._push_secret = self._generate_secret()
@@ -130,6 +122,7 @@ class AsyncPushUpdateHandler:
             )
 
         self.webhook_url = webhook_url
+        self.cloudhook = cloudhook
 
         # Schedule daily re-registration with a fresh secret
         if self._cancel_reregister:
